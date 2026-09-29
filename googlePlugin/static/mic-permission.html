@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ScreenSpot Voice microphone setup</title>
+  <link rel="stylesheet" href="mic-permission.css">
+</head>
+<body>
+  <main>
+    <h1>Allow your microphone</h1>
+    <p>Chrome needs this permission on a full extension tab before ScreenSpot Voice can use the microphone from its side panel.</p>
+    <p>This setup check stops its temporary microphone track immediately. Audio is sent to Gemini only after you return to the webpage and start a session.</p>
+    <p id="status" role="status">Checking microphone permission…</p>
+    <div class="actions">
+      <button id="allow" type="button">Allow microphone</button>
+      <button id="back" type="button">Return to webpage</button>
+    </div>
+    <p class="help">If Chrome has blocked permission, open <strong>chrome://extensions → ScreenSpot Voice → Details → Site settings</strong>, allow <strong>Microphone</strong>, then return here and try again.</p>
+  </main>
+  <script src="mic-permission.js"></script>
+</body>
+</html>

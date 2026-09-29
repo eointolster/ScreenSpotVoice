@@ -1,0 +1,1 @@
+"""Local ScreenSpot Voice backend."""
