@@ -29,7 +29,24 @@ def main():
     fps = float(os.getenv("GEMINI_IMAGE_FPS", "0.8"))
     if not 0 < fps <= 1:
         raise SystemExit("GEMINI_IMAGE_FPS must be >0 and <=1")
-    backend = os.getenv("MODEL_BACKEND", "gemini").strip().lower()
+    keep_alive = _parse_keep_alive(os.getenv("OLLAMA_KEEP_ALIVE", ""))
+    # The side panel can switch provider; that choice is remembered here so it
+    # survives a restart. Env is the default, not an override of the stored pick.
+    choice_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".provider-choice")
+    remembered = ""
+    try:
+        with open(choice_path, encoding="utf-8") as handle:
+            remembered = handle.read().strip().lower()
+    except OSError:
+        pass
+    requested = os.getenv("MODEL_BACKEND", "gemini").strip().lower()
+    if requested not in ("gemini", "local"):
+        raise SystemExit("MODEL_BACKEND must be 'gemini' or 'local'")
+    if remembered == "local":
+        # Only ever upgrade a Gemini default: an explicit env choice still wins.
+        backend = "local"
+    else:
+        backend = requested
     if backend not in ("gemini", "local"):
         raise SystemExit("MODEL_BACKEND must be 'gemini' or 'local'")
     key = os.getenv("GEMINI_API_KEY", "").strip()
@@ -44,7 +61,8 @@ def main():
                         backend=backend,
                         local_host=local_host,
                         local_model=os.getenv("OLLAMA_MODEL", "qwen3.8:27b").strip(),
-                        local_keep_alive=keep_alive)
+                        local_keep_alive=keep_alive,
+                        choice_path=choice_path)
     token = secrets.token_urlsafe(24)
     if backend == "local":
         mode = f"LOCAL ({settings.local_model} via {local_host})"

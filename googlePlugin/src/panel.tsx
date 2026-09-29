@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { emptyState, type PanelState } from './contracts';
+import { chooseProvider, emptyState, fetchProviderStatus, type PanelState, type ProviderStatus } from './contracts';
 
 function App() {
   const [state, setState] = useState<PanelState>(emptyState());
@@ -9,6 +9,33 @@ function App() {
   const [text, setText] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [providers, setProviders] = useState<ProviderStatus | null>(null);
+  const [providerError, setProviderError] = useState('');
+
+  const refreshProviders = useCallback(async () => {
+    try {
+      setProviders(await fetchProviderStatus(Number(port) || 8766));
+      setProviderError('');
+    } catch (e) {
+      setProviders(null);
+      setProviderError(`Cannot reach the backend on port ${port}: ${(e as Error).message}`);
+    }
+  }, [port]);
+
+  useEffect(() => { void refreshProviders(); }, [refreshProviders]);
+
+  /** Switch provider for the next session. The backend has the final say. */
+  async function selectProvider(provider: string) {
+    setProviderError(''); setBusy(true);
+    try {
+      if (token.trim().length < 16) throw new Error('Enter the pairing code to switch provider.');
+      const next = await chooseProvider(Number(port) || 8766, token.trim(), provider);
+      setProviders(next);
+      setError(`Provider set to ${next.providers[provider]?.label ?? provider}. Start a new session to use it.`);
+    } catch (e) {
+      setProviderError((e as Error).message);
+    } finally { setBusy(false); }
+  }
   useEffect(() => {
     chrome.runtime.sendMessage({ type: 'GET_STATE' }).then(reply => { if (reply?.ok) setState(reply.value); }).catch(() => {});
     const listener = (message: any) => { if (message?.type === 'STATE') setState(message.state); };
@@ -57,6 +84,28 @@ function App() {
       <small><strong>Model:</strong> {provider} ({mode || 'unknown mode'})</small>
     </div>
     {mode === 'calibration' && <div className="card"><small><strong>No live model is configured.</strong> The backend is running without a Gemini key, so it cannot answer questions. Set <code>MODEL_BACKEND=local</code> in <code>googlePlugin/.env</code> and restart to use a local model instead, or add <code>GEMINI_API_KEY</code>.</small></div>}
+    <div className="card">
+      <label htmlFor="provider">Model provider</label>
+      {!providers
+        ? <div className="row"><button disabled onClick={() => {}}>Unavailable</button><button disabled onClick={() => {}}>Unavailable</button><button disabled onClick={() => void refreshProviders()}>Retry</button></div>
+        : <div className="row">{(['local', 'gemini'] as const).map(id => {
+            const info = providers.providers[id];
+            const selected = providers.selected === id;
+            return <button key={id}
+              className={selected ? 'primary' : ''}
+              disabled={busy || active || !info?.available}
+              title={info?.available ? info.detail : `${info?.label ?? id}: ${info?.detail ?? 'unavailable'}`}
+              onClick={() => void selectProvider(id)}>
+              {info?.label ?? id}{selected ? ' ✓' : ''}{info && !info.available ? ' (no key)' : ''}
+            </button>;
+          })}
+          {active && <button disabled>End session to switch</button>}
+        </div>}
+      {providers && <small>Applies to the next session. {providers.mode === 'local'
+        ? 'Screenshots stay on this machine; Chrome sends microphone audio to a Google speech service.'
+        : 'Microphone audio and tab images are sent to Google Gemini.'}</small>}
+      {providerError && <div className="error" role="alert">{providerError}</div>}
+    </div>
     {!active && <>
       <div className="card"><small>{isLocal
         ? 'Microphone audio is transcribed by Chrome (audio goes to a Google speech service). Selected tab images are sent only to the local backend and your own model, so page content is not uploaded to Google. No webcam or tab audio is captured.'

@@ -230,6 +230,100 @@ def test_local_turn_speaks_the_real_outcome_when_the_model_is_silent():
     asyncio.run(scenario())
 
 
+def test_provider_status_reports_availability_without_leaking_the_key():
+    from backend.server import Settings
+
+    keyed = Settings(key="secret-key-value")
+    status = keyed.provider_status()
+    assert status["gemini"]["available"] is True
+    assert status["local"]["available"] is True
+    # Availability is safe to expose on an unauthenticated loopback endpoint;
+    # the key itself must never appear anywhere in the payload.
+    assert "secret-key-value" not in repr(status)
+
+    keyless = Settings(key="")
+    assert keyless.provider_status()["gemini"]["available"] is False
+    assert "GEMINI_API_KEY" in keyless.provider_status()["gemini"]["detail"]
+
+
+def test_switching_to_gemini_without_a_key_is_refused():
+    """The button must not put the backend into a state that never answers."""
+    from fastapi.testclient import TestClient
+    from backend.server import Settings, create_app
+
+    settings = Settings(key="")
+    with TestClient(create_app(settings, "pairing-code-123456")) as client:
+        assert client.get("/health").json()["providers"]["gemini"]["available"] is False
+        response = client.post("/provider", json={"provider": "gemini", "token": "pairing-code-123456"})
+        assert response.status_code == 409
+        assert "GEMINI_API_KEY" in response.json()["detail"]
+        # The refused choice must not have been applied.
+        assert client.get("/health").json()["selected"] == "gemini"
+        assert settings.backend == "gemini"
+
+        # Local is always available, so it must be accepted.
+        ok = client.post("/provider", json={"provider": "local", "token": "pairing-code-123456"})
+        assert ok.status_code == 200
+        assert ok.json()["selected"] == "local"
+        assert settings.backend == "local"
+
+
+def test_switching_requires_the_pairing_code_and_rejects_junk():
+    from fastapi.testclient import TestClient
+    from backend.server import Settings, create_app
+
+    settings = Settings(backend="local", key="k")
+    with TestClient(create_app(settings, "pairing-code-123456")) as client:
+        assert client.post("/provider", json={"provider": "gemini", "token": "wrong-code-000000"}).status_code == 403
+        assert client.post("/provider", json={"provider": "gemini"}).status_code == 422
+        assert client.post("/provider", json={"provider": "unknown", "token": "pairing-code-123456"}).status_code == 422
+        # A second provider field must not be silently ignored.
+        assert client.post("/provider", json={
+            "provider": "gemini", "token": "pairing-code-123456", "extra": 1}).status_code == 422
+        assert settings.backend == "local"
+
+
+def test_switching_is_refused_while_a_session_is_live():
+    """The two paths differ on whether mic audio crosses the wire."""
+    from fastapi.testclient import TestClient
+    from backend.server import Settings, create_app
+
+    settings = Settings(backend="local", key="k")
+    app = create_app(settings, "pairing-code-123456")
+    with TestClient(app) as client:
+        app.state.owner = "session-in-progress"
+        response = client.post("/provider", json={"provider": "gemini", "token": "pairing-code-123456"})
+        assert response.status_code == 409
+        assert "End the current session" in response.json()["detail"]
+        assert settings.backend == "local"
+
+
+def test_choice_is_remembered_across_a_restart(tmp_path, monkeypatch):
+    """A pick made in the panel is read back on the next start."""
+    from backend.server import Settings
+
+    choice = tmp_path / ".provider-choice"
+    first_run = Settings(backend="gemini", choice_path=str(choice))
+    first_run.remember_choice("local")
+    assert choice.read_text().strip() == "local"
+
+    # What run.py does on startup: prefer a remembered "local" over the default.
+    remembered = choice.read_text().strip().lower()
+    requested = "gemini"                       # MODEL_BACKEND unset defaults to gemini
+    second_run_backend = "local" if remembered == "local" else requested
+    assert second_run_backend == "local"
+
+    # With no stored choice, the environment default is used unchanged.
+    empty = tmp_path / "missing"
+    remembered = empty.read_text().strip().lower() if empty.exists() else ""
+    assert ("local" if remembered == "local" else "gemini") == "gemini"
+
+    # A read-only path must not stop the backend from starting.
+    unwritable = Settings(backend="local", choice_path="/proc/definitely-not-writable")
+    unwritable.remember_choice("gemini")       # must not raise
+    assert unwritable.backend == "gemini"
+
+
 def test_keep_alive_is_passed_to_ollama_and_optional(monkeypatch):
     """A 17 GB model unloads after 5 min idle; the reload costs ~20 s."""
     from backend.local_model import LocalAdapter

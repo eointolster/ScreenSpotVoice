@@ -12,10 +12,10 @@ from typing import Any
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.sdp import candidate_from_sdp
 from av import AudioResampler
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from google.genai import types
 from PIL import Image
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .audio import ReturnAudio
 from .gemini import GeminiAdapter
@@ -59,6 +59,26 @@ class Settings:
     local_model: str = "qwen3.8:27b"
     # How long Ollama keeps the model resident; None uses Ollama's own default.
     local_keep_alive: str | int | None = None
+    # File the panel's choice is written to, so it survives a restart.
+    choice_path: str | None = None
+
+    def save_choice(self) -> None:
+        """Remember the panel's choice for the next run.
+
+        A best-effort convenience: a read-only or missing directory must not stop
+        the backend from serving, so failures are ignored rather than raised.
+        """
+        if not self.choice_path:
+            return
+        try:
+            with open(self.choice_path, "w", encoding="utf-8") as handle:
+                handle.write(self.backend)
+        except OSError:
+            pass
+
+    def remember_choice(self, provider: str) -> None:
+        self.backend = provider
+        self.save_choice()
 
     @property
     def is_local(self) -> bool:
@@ -72,6 +92,28 @@ class Settings:
         if self.is_local:
             return "local"
         return "live" if self.key else "calibration"
+
+    def provider_status(self) -> dict[str, dict[str, object]]:
+        """Which providers can actually answer right now, and why not if not.
+
+        Reported to the side panel so it can show an honest choice instead of
+        letting someone pick Gemini with no key and wonder why nothing replies.
+        Reports availability only: never the key itself, and never any other
+        secret, so it is safe on an unauthenticated loopback endpoint.
+        """
+        return {
+            "gemini": {
+                "label": "Gemini Live",
+                "available": bool(self.key),
+                "detail": "Live duplex voice." if self.key else "No GEMINI_API_KEY set in googlePlugin/.env.",
+            },
+            "local": {
+                "label": f"Local model ({self.local_model})",
+                "available": True,
+                "detail": f"Vision and tools on your own machine via {self.local_host}. "
+                          "Chrome transcribes the microphone.",
+            },
+        }
 
 
 class Call:
@@ -479,6 +521,18 @@ class Call:
         except RuntimeError: pass
 
 
+class ProviderChoice(BaseModel):
+    """A request to change which provider the *next* session will use.
+
+    Validated rather than trusted: a client asking for Gemini without a key is
+    rejected, so the panel cannot put the backend into a state that silently
+    never answers.
+    """
+    model_config = ConfigDict(extra="forbid", strict=True)
+    provider: str = Field(min_length=3, max_length=16)
+    token: str = Field(min_length=16, max_length=256)
+
+
 def create_app(settings: Settings, pairing_token: str) -> FastAPI:
     app = FastAPI(title="ScreenSpot Voice local backend", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.owner = None
@@ -486,7 +540,32 @@ def create_app(settings: Settings, pairing_token: str) -> FastAPI:
 
     @app.get("/health")
     async def health():
-        return {"ok": True, "mode": settings.mode_label(), "model": settings.provider_label()}
+        return {"ok": True, "mode": settings.mode_label(), "model": settings.provider_label(),
+                "selected": settings.backend, "providers": settings.provider_status()}
+
+    @app.post("/provider")
+    async def choose_provider(choice: ProviderChoice):
+        """Choose the provider for subsequent sessions.
+
+        Deliberately cannot switch the provider of a live session: the two paths
+        differ in whether microphone audio crosses the wire, so changing it
+        mid-call would leak or drop audio without either side asking. The panel
+        is told to end the session first.
+        """
+        if not secrets.compare_digest(choice.token, pairing_token):
+            raise HTTPException(status_code=403, detail="Incorrect pairing code.")
+        provider = choice.provider.strip().lower()
+        if provider not in ("gemini", "local"):
+            raise HTTPException(status_code=422, detail="Provider must be 'gemini' or 'local'.")
+        if app.state.owner is not None:
+            raise HTTPException(status_code=409, detail="End the current session before switching provider.")
+        status = settings.provider_status()[provider]
+        if not status["available"]:
+            # This is the case the button must refuse: Gemini with no key.
+            raise HTTPException(status_code=409, detail=str(status["detail"]))
+        settings.remember_choice(provider)
+        return {"ok": True, "selected": settings.backend, "mode": settings.mode_label(),
+                "model": settings.provider_label(), "providers": settings.provider_status()}
 
     @app.websocket("/ws")
     async def endpoint(ws: WebSocket):

@@ -145,6 +145,24 @@ If you started without a `MODEL_BACKEND` line the backend stays on Gemini, and w
 
 Measured on an RTX 5090 against `test-page/index.html` (box measured from the live DOM): `qwen3.8:27b` returned `[172,30,210,120]` against a ground truth of `[171,31,205,122]`. A warm turn including a real WebRTC frame took ~1.6 s; the first call after the model is unloaded spends ~20 s loading it, so set `OLLAMA_KEEP_ALIVE`.
 
+### Switching provider from the side panel
+
+The panel has a **Model provider** control with one button per backend. Which buttons are usable comes from the backend, not the panel: `GET /health` reports `available` and a reason for each. With no `GEMINI_API_KEY`, the **Gemini Live** button is disabled and reads *(no key)*, so an unavailable provider cannot be selected. Hovering shows why.
+
+Selecting a provider calls `POST /provider` with the pairing code; the backend validates and applies it, or refuses with a reason the panel displays. Verified behaviour with no key:
+
+```
+GET  /health              -> gemini.available = false, "No GEMINI_API_KEY set in googlePlugin/.env."
+POST /provider {gemini}   -> 409 "No GEMINI_API_KEY set in googlePlugin/.env."
+POST /provider {local}    -> 200 selected=local
+```
+
+The choice is remembered in `googlePlugin/.provider-choice` (gitignored) and applied on the next start, so it survives a restart with `MODEL_BACKEND` left at its default. An explicit `MODEL_BACKEND=local` in `.env` still wins over a stored `gemini`.
+
+Two deliberate limits: the pairing code is required, because switching is a control-plane change rather than a health probe; and switching is **refused while a session is running** (HTTP 409, "End the current session before switching provider"), because the two paths differ in whether microphone audio crosses the WebRTC connection. Changing it mid-call would move audio across the wire in one direction or the other without either side asking. The panel disables the buttons and says so.
+
+The endpoint reports only availability, never the key. `connect-src` now also allows `http://127.0.0.1:*` so the panel can reach `/health` and `/provider` on loopback; it remains restricted to `127.0.0.1`.
+
 **Differences from the Gemini path, all deliberate:**
 
 - Turn-based, not duplex. One question produces one answer; speaking over a reply cancels it locally, but there is no server-side VAD and no mid-sentence barge-in.

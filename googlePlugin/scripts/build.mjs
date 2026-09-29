@@ -16,5 +16,5 @@ await writeFile('dist/manifest.json', JSON.stringify({
   action: { default_title: 'Open ScreenSpot Voice' },
   background: { service_worker: 'background.js' },
   side_panel: { default_path: 'panel.html' },
-  content_security_policy: { extension_pages: "script-src 'self'; object-src 'self'; connect-src 'self' ws://127.0.0.1:*" }
+  content_security_policy: { extension_pages: "script-src 'self'; object-src 'self'; connect-src 'self' ws://127.0.0.1:* http://127.0.0.1:*" }
 }, null, 2));
