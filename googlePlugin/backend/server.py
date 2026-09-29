@@ -20,6 +20,7 @@ from pydantic import ValidationError
 from .audio import ReturnAudio
 from .gemini import GeminiAdapter
 from .grounding import Frame, Grounding, outside_box_distance
+from .local_model import LocalAdapter, LocalModelError
 from .protocol import ClearArgs, Hello, HighlightArgs, OverlayResult, View, check_origin, parse_event
 from .video_geometry import align_tab_frame
 
@@ -30,6 +31,23 @@ class Settings:
     model: str = "gemini-2.5-flash-native-audio-preview-12-2025"
     image_fps: float = 0.8
     allowed_extension_id: str | None = None
+    # "gemini" (default, unchanged behaviour) or "local" (Ollama vision+tools).
+    backend: str = "gemini"
+    local_host: str = "http://127.0.0.1:11434"
+    local_model: str = "qwen3.8:27b"
+
+    @property
+    def is_local(self) -> bool:
+        return self.backend == "local"
+
+    def provider_label(self) -> str:
+        return f"local:{self.local_model}" if self.is_local else self.model
+
+    def mode_label(self) -> str:
+        """Calibration means "no live provider", exactly as before for Gemini."""
+        if self.is_local:
+            return "local"
+        return "live" if self.key else "calibration"
 
 
 class Call:
@@ -40,6 +58,7 @@ class Call:
         self.audio_out = ReturnAudio()
         self.grounding = Grounding(hello.source_id, hello.view)
         self.adapter: GeminiAdapter | None = None
+        self.local: LocalAdapter | None = None
         self.provider_dead = False
         self.tasks: set[asyncio.Task] = set()
         self.pending: dict[str, asyncio.Future[OverlayResult]] = {}
@@ -73,7 +92,8 @@ class Call:
             async with self.send_lock:
                 await self.ws.send_json(data)
 
-    async def status(self, status: str, detail: str = "", text: str = ""):
+    async def status(self, status: str, detail: str = "", text: str = "", speak: str = "",
+                     local_latency_ms: int | None = None):
         frame = self.grounding.latest
         diagnostics = {"rtc": self.pc.connectionState, "receivedAudioFrames": self.audio_frames,
                        "receivedVideoFrames": self.video_frames, "sentGeminiImages": self.image_count,
@@ -90,7 +110,9 @@ class Call:
                        "firstGeminiAudioAfterSpeechEstimateMs": self.first_audio_after_speech_ms,
                        "grounding": self.last_grounding,
                        "lastFrameReceivedSecondsAgo": round(monotonic() - frame.received_at, 2) if frame else None}
-        await self.send({"type": "status", "status": status, "detail": detail, "text": text, "diagnostics": diagnostics})
+        await self.send({"type": "status", "status": status, "detail": detail, "text": text,
+                         "diagnostics": diagnostics, **({"speak": speak} if speak else {}),
+                         **({"localLatencyMs": local_latency_ms} if local_latency_ms is not None else {})})
 
     def _on_track(self, track):
         if track.kind == "audio": self.spawn(self._audio_loop(track))
@@ -101,6 +123,15 @@ class Call:
             self.spawn(self.status("Disconnected", "WebRTC connection ended. End and restart the session."))
 
     async def _audio_loop(self, track):
+        # Local path: Chrome transcribes the microphone, so no audio track is
+        # ever sent here. Drain and discard so a stray track cannot stall RTP.
+        if self.settings.is_local:
+            try:
+                while not self.ended:
+                    await track.recv()
+            except (asyncio.CancelledError, Exception):
+                pass
+            return
         resampler = AudioResampler(format="s16", layout="mono", rate=16000)
         try:
             while not self.ended:
@@ -144,6 +175,10 @@ class Call:
                 await self.status("Disconnected", "Tab video stopped.")
 
     async def _image_loop(self):
+        # The local path is one image per question, not a continuous feed, so
+        # only the Gemini provider streams frames on a timer.
+        if self.settings.is_local:
+            return
         while not self.ended:
             await asyncio.sleep(0.08)
             if self.paused or not self.adapter or not self.adapter.live:
@@ -167,7 +202,8 @@ class Call:
     async def _status_loop(self):
         while not self.ended:
             await asyncio.sleep(2)
-            if self.provider_dead: continue
+            if self.provider_dead or self.settings.is_local:
+                continue
             if self.grounding.latest and not self.grounding.coordinate_fit() and not self.paused:
                 await self.status("Aligning", "Captured tab dimensions do not match the webpage. Highlights and microphone forwarding are waiting for aligned video.")
             elif self.settings.key and self.adapter and self.adapter.live and not self.grounding.last_sent and not self.paused:
@@ -176,6 +212,17 @@ class Call:
                 await self.status("Paused" if self.paused else "Ready" if not self.settings.key else "Connecting" if not self.adapter or not self.adapter.live else "Responding" if self.adapter.responding else "Listening")
 
     async def _run_adapter(self):
+        if self.settings.is_local:
+            self.local = LocalAdapter(self.settings.local_host, self.settings.local_model)
+            reachable, detail = await self.local.health()
+            if not reachable:
+                self.provider_dead = True
+                await self.status("Error", f"Local model unavailable: {detail}")
+                return
+            await self.local.start()
+            await self.status("Ready", f"Local model {self.settings.local_model} ready. "
+                                        "Microphone audio is transcribed by Chrome; screenshots stay on this machine.")
+            return
         if not self.settings.key:
             await self.status("Ready", "No API key: transport and overlay calibration only.")
             return
@@ -319,7 +366,10 @@ class Call:
         elif event.type == "text":
             self._invalidate()
             generation = self.grounding.generation
-            self.spawn(self._text_after_image(event.text, generation))
+            if self.settings.is_local:
+                self.spawn(self._local_turn(event.text, generation))
+            else:
+                self.spawn(self._text_after_image(event.text, generation))
         elif event.type == "mute":
             self.muted = event.muted
             if event.muted and self.adapter: await self.adapter.audio_stream_end()
@@ -334,6 +384,48 @@ class Call:
                 await self.adapter.send_text(text)
                 return
         await self.status("Error", "No clean screen frame was available for typed request.")
+
+    async def _local_turn(self, question: str, generation: int):
+        """Answer one transcribed question with one clean frame, then speak.
+
+        The local path is request/response rather than a duplex socket, so this
+        replaces Gemini's streaming send_text/send_video with a single call.
+        Tool calls go through the same _on_tool validator and the same overlay
+        acknowledgement as the Gemini path; only the transport differs.
+        """
+        frame = self.grounding.ready_frame()
+        if not frame or frame.received_at <= self.last_image_at or not self.grounding.coordinate_fit(frame):
+            await self.status("Aligning", "Waiting for a clean aligned frame before answering.")
+            for _ in range(30):
+                await asyncio.sleep(0.1)
+                frame = self.grounding.ready_frame()
+                if frame and frame.received_at > self.last_image_at and self.grounding.coordinate_fit(frame):
+                    break
+            else:
+                await self.status("Error", "No clean screen frame was available for that request.")
+                return
+        if self.ended or generation != self.grounding.generation:
+            return
+        # This frame is what the answer refers to, so it must count as sent.
+        self.grounding.mark_sent(frame)
+        self.last_image_at = monotonic()
+        self.image_count += 1
+        self.image_times.append(self.last_image_at)
+        assert self.local is not None
+        await self.status("Responding", "Asking the local model…")
+        try:
+            turn = await self.local.ask(question, frame.jpeg)
+        except LocalModelError as error:
+            await self.status("Error", f"Local model failed: {error}")
+            return
+        if self.ended or generation != self.grounding.generation:
+            return
+        for call in turn.tool_calls:
+            await self._on_tool(call["name"], call["arguments"])
+        reply = turn.text or "I could not answer that."
+        await self.status("Responding", text=reply[:500],
+                          speak=reply[:400],
+                          local_latency_ms=self.local.last_latency_ms)
 
     async def run(self):
         try:
@@ -352,6 +444,8 @@ class Call:
     async def close(self):
         self.ended = True
         self.audio_out.clear()
+        if self.local is not None:
+            await self.local.close()
         for future in self.pending.values():
             if not future.done(): future.cancel()
         for task in list(self.tasks): task.cancel()
@@ -368,7 +462,7 @@ def create_app(settings: Settings, pairing_token: str) -> FastAPI:
 
     @app.get("/health")
     async def health():
-        return {"ok": True, "mode": "live" if settings.key else "calibration"}
+        return {"ok": True, "mode": settings.mode_label(), "model": settings.provider_label()}
 
     @app.websocket("/ws")
     async def endpoint(ws: WebSocket):
@@ -391,7 +485,7 @@ def create_app(settings: Settings, pairing_token: str) -> FastAPI:
         app.state.owner = hello.session_id
         call = Call(ws, hello, settings)
         try:
-            await call.send({"type": "hello", "model": settings.model if settings.key else "none", "mode": "live" if settings.key else "calibration"})
+            await call.send({"type": "hello", "model": settings.provider_label(), "mode": settings.mode_label()})
             await call.run()
         finally:
             app.state.owner = None

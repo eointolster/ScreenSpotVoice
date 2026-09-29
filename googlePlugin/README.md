@@ -122,3 +122,31 @@ The automated tests need no Gemini key. They cover coordinate/box validation, ta
 **Verification:** the TypeScript checks, build, and automated tests pass. In a disposable Chrome for Testing profile, the built extension loaded; the side panel and no-key SVG calibration worked on the actual test webpage, an Export button remained clickable through the outline, and scrolling cleared it. That automation profile returned `Requested device not found` when consuming the tab-capture stream ID. A later user-run Chrome session confirmed real microphone/video receipt, Gemini output, clear returned audio, and zero dropped return-audio chunks. Its highlight was rejected because the 3440×1440 decoded video did not match the 1454×1028 webpage viewport. The new capture sizing and verified padding crop pass synthetic geometry tests but still need a live retest for the rectangle.
 
 Google's [Live capabilities guide](https://ai.google.dev/gemini-api/docs/live-api/capabilities) documents 16 kHz PCM input, 24 kHz PCM output, video frames at no more than 1 FPS, automatic VAD, interruption events, and a current two-minute audio-plus-video session limit without extension techniques. This app reports session expiry/disconnect and never performs an uncontrolled paid reconnect. The local model-frame association is deliberately conservative because Live tool calls do not carry an application-issued frame ID. Tight pixel-perfect boxes and guaranteed sub-two-second replies are not promised.
+
+## Local model backend (no Gemini key)
+
+`MODEL_BACKEND=local` in `.env` replaces Gemini with a vision+tools model on your own machine, served by [Ollama](https://ollama.com). Chrome transcribes the microphone, the model is asked one question against one clean frame, and the reply is spoken by the browser's own synthesiser. No API key, no quota, and no Gemini session-time limit.
+
+```bash
+ollama pull qwen3.8:27b        # any vision+tools model with Ollama works
+# .env
+MODEL_BACKEND=local
+OLLAMA_HOST=http://127.0.0.1:11434
+OLLAMA_MODEL=qwen3.8:27b
+```
+
+Start the backend as usual. The terminal prints `mode=LOCAL (qwen3.8:27b via …)`; `GET /health` reports `{"mode":"local","model":"local:qwen3.8:27b"}`. Everything else — pairing, overlay, grounding staleness, box validation — is unchanged. Setting `MODEL_BACKEND=gemini` restores the original live path exactly; the Gemini key is not required and is not read on the local path.
+
+**What is and is not local.** Screenshots are encoded on your machine and sent only to your local Ollama server, so page content never reaches Google on this path. **Microphone audio is not local:** Chrome's `SpeechRecognition` is a cloud service and sends audio to a Google speech endpoint, so the existing audio disclosure in *Architecture and privacy* still applies. There is no webcam, tab audio, or capture of any other tab.
+
+Measured on an RTX 5090 against `test-page/index.html` (box measured from the live DOM): `qwen3.8:27b` returned `[172,30,210,120]` against a ground truth of `[171,31,205,122]`. Warm turn latency including a real WebRTC frame was ~1.6 s; the first call after the model is unloaded spends ~20 s loading it, so `OLLAMA_KEEP_ALIVE` is worth setting.
+
+**Differences from the Gemini path, all deliberate:**
+
+- Turn-based, not duplex. One question produces one answer; speaking over a reply cancels it locally, but there is no server-side VAD and no mid-sentence barge-in.
+- One image per question rather than a continuous 0.8 fps feed, so image sends stop while a highlight is visible and resume after it clears.
+- Replies are text plus `speechSynthesis` audio, not Gemini's 24 kHz return track, so `backend/audio.py` and the WebRTC return path are unused here.
+- No microphone audio is sent over WebRTC; the peer connection carries tab video only.
+- Tool arguments are normalised before validation because the local model emits `box_2d` as the string `"[172, 30, 205, 122]"` rather than a number array. Malformed values are still rejected by the same `HighlightArgs` checks.
+- The `gemma4` model is fast and transcribes audio well, but measured 0/4 on normalised box grounding, so it is not the default; any model you substitute must be checked against a real page before you trust its rectangles.
+
