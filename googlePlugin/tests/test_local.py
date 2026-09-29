@@ -174,6 +174,62 @@ def test_local_turn_surfaces_model_failure_without_claiming_success():
     asyncio.run(scenario())
 
 
+def test_silent_tool_call_is_described_by_what_actually_happened():
+    """The local model often draws a box and says nothing at all.
+
+    Substituting "I could not answer that" was wrong: the rectangle was on the
+    page. These assertions pin the honest wording for each outcome.
+    """
+    from backend.server import _describe_tool_results
+
+    drawn = {"ok": True, "result": "Highlight rendered on current webpage"}
+    cleared = {"ok": True, "reason": "Highlight cleared"}
+    rejected = {"ok": False, "reason": "The page changed"}
+
+    assert _describe_tool_results([drawn]) == "I put a box around it."
+    assert _describe_tool_results([cleared]) == "I cleared the box."
+    assert _describe_tool_results([drawn, cleared]) == "I cleared the previous box."
+    # A refusal must still say so rather than claiming a box was drawn.
+    assert "I could not highlight that" in _describe_tool_results([rejected])
+    assert "The page changed" in _describe_tool_results([rejected])
+    # Nothing at all is the only case that may say it could not answer.
+    assert _describe_tool_results([]) == "I could not answer that."
+
+
+def test_local_turn_speaks_the_real_outcome_when_the_model_is_silent():
+    """A box was drawn, so the spoken reply must not claim otherwise."""
+    async def scenario():
+        from types import SimpleNamespace
+        from backend.local_model import LocalTurn
+        call = make_call()
+
+        async def fake_ask(question, jpeg):
+            return LocalTurn("", [                      # no text at all
+                {"id": "t1", "name": "highlight_region",
+                 "arguments": {"label": "Upload", "box_2d": [171, 31, 205, 122]}}])
+
+        async def confirmed(kind, box=None, label="", view=None, image=None):
+            return OverlayResult(type="overlay_result", id="render-ok", ok=True)
+
+        call.local = SimpleNamespace(ask=fake_ask, last_latency_ms=900)
+        call._request_overlay = confirmed
+        call._invalidate = lambda view=None: None
+        source = frame()
+        call.grounding.accept_frame(source)
+        call.grounding.mark_sent(source)
+        call.last_image_at = 0.0
+        try:
+            await call._local_turn("put a box anywhere", call.grounding.generation)
+            spoken = [m.get("speak") for m in statuses(call) if m.get("speak")]
+            assert spoken, "a reply must be spoken"
+            assert spoken[-1] == "I put a box around it."
+            assert "could not answer" not in spoken[-1]
+        finally:
+            call.local = None
+            await call.close()
+    asyncio.run(scenario())
+
+
 def test_keep_alive_is_passed_to_ollama_and_optional(monkeypatch):
     """A 17 GB model unloads after 5 min idle; the reload costs ~20 s."""
     from backend.local_model import LocalAdapter

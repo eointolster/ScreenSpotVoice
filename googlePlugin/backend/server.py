@@ -25,6 +25,28 @@ from .protocol import ClearArgs, Hello, HighlightArgs, OverlayResult, View, chec
 from .video_geometry import align_tab_frame
 
 
+def _describe_tool_results(results: list[dict[str, Any]]) -> str:
+    """Say what actually happened when the model returned a tool call and no words.
+
+    The local model often calls highlight_region and then emit no text at all.
+    Substituting a generic "I could not answer that" was both wrong and, spoken
+    aloud, actively confusing: the rectangle was on the page while the reply
+    claimed nothing had been found. Describe the real outcome instead.
+    """
+    if not results:
+        return "I could not answer that."
+    highlighted = any(r.get("ok") and r.get("result") for r in results)
+    cleared = any(r.get("ok") and r.get("reason") == "Highlight cleared" for r in results)
+    if highlighted and cleared:
+        return "I cleared the previous box."
+    if highlighted:
+        return "I put a box around it."
+    if cleared:
+        return "I cleared the box."
+    reason = next((r.get("reason") for r in results if r.get("reason")), "")
+    return f"I could not highlight that. {reason}".strip()
+
+
 @dataclass
 class Settings:
     key: str = ""
@@ -423,9 +445,8 @@ class Call:
             return
         if self.ended or generation != self.grounding.generation:
             return
-        for call in turn.tool_calls:
-            await self._on_tool(call["name"], call["arguments"])
-        reply = turn.text or "I could not answer that."
+        results = [await self._on_tool(call["name"], call["arguments"]) for call in turn.tool_calls]
+        reply = turn.text or _describe_tool_results(results)
         await self.status("Responding", text=reply[:500],
                           speak=reply[:400],
                           local_latency_ms=self.local.last_latency_ms)

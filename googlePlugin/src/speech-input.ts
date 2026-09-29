@@ -25,7 +25,7 @@ type SpeechRecognitionLike = {
 type Listener = {
   onFinal: (text: string) => void;
   onInterim: (text: string) => void;
-  onState: (state: 'starting' | 'listening' | 'unavailable' | 'error', detail?: string) => void;
+  onState: (state: 'starting' | 'listening' | 'suspended' | 'unavailable' | 'error', detail?: string) => void;
 };
 
 const Ctor: (new () => SpeechRecognitionLike) | undefined =
@@ -35,25 +35,85 @@ let recognition: SpeechRecognitionLike | null = null;
 let wanted = false;
 let listener: Listener | null = null;
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
+let settleTimer: ReturnType<typeof setTimeout> | null = null;
 let consecutiveErrors = 0;
 
-/** Local turn-taking uses these instead of server-side VAD. */
+// --- Echo suppression -------------------------------------------------------
+// The assistant's reply is spoken aloud on the same machine that is listening,
+// so the microphone hears it back. Chrome's recogniser captures independently
+// of our WebRTC track, so disabling that track does not help: recognition has
+// to actually stop while we speak.
 let assistantBusy = false;
-let onAssistantDone: (() => void) | null = null;
+/** Set when the assistant is speaking, cleared a moment after it stops. */
+let echoGuardUntil = 0;
+/** What the assistant last said, used to catch audio still in the room. */
+let lastSpoken = '';
+/** Consecutive dropped echoes; guards against a runaway loop if the guard fails. */
+let echoStreak = 0;
+let onEchoLoop: (() => void) | null = null;
+
+const ECHO_SETTLE_MS = 400;
+const ECHO_LOOP_LIMIT = 4;
+
+function clearTimers() {
+  if (restartTimer !== null) { clearTimeout(restartTimer); restartTimer = null; }
+  if (settleTimer !== null) { clearTimeout(settleTimer); settleTimer = null; }
+}
 
 export function setListener(next: Listener | null) {
   listener = next;
 }
 
-export function setAssistantBusy(busy: boolean, done?: () => void) {
-  assistantBusy = busy;
-  onAssistantDone = done ?? null;
+export function onEchoLoopDetected(callback: (() => void) | null) {
+  onEchoLoop = callback;
 }
 
-function clearRestart() {
-  if (restartTimer !== null) {
-    clearTimeout(restartTimer);
-    restartTimer = null;
+/** Record what the assistant is about to say, so its echo can be recognised. */
+export function noteAssistantSaid(text: string) {
+  lastSpoken = normalize(text);
+}
+
+function normalize(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * True when `text` looks like the assistant hearing itself.
+ *
+ * Token overlap is the reliable signal: genuine new questions rarely reuse most
+ * of the assistant's wording, while a mistranscribed echo usually does.
+ */
+export function looksLikeEcho(text: string): boolean {
+  if (assistantBusy) return true;
+  if (Date.now() < echoGuardUntil) return true;
+  const heard = normalize(text);
+  if (!heard || !lastSpoken) return false;
+  const spokenTokens = new Set(lastSpoken.split(' ').filter(Boolean));
+  const heardTokens = heard.split(' ').filter(Boolean);
+  if (!heardTokens.length) return false;
+  const shared = heardTokens.filter(token => spokenTokens.has(token)).length;
+  return shared / heardTokens.length >= 0.6;
+}
+
+/** Called when the assistant starts or finishes speaking. */
+export function setAssistantBusy(busy: boolean) {
+  if (busy === assistantBusy) return;
+  assistantBusy = busy;
+  if (settleTimer !== null) { clearTimeout(settleTimer); settleTimer = null; }
+  if (busy) {
+    // Stop capturing for the whole spoken reply.
+    hardStop();
+    listener?.onState('suspended');
+    return;
+  }
+  // The room still rings after playback stops, so wait before listening again.
+  echoGuardUntil = Date.now() + ECHO_SETTLE_MS;
+  if (wanted) {
+    settleTimer = setTimeout(() => {
+      settleTimer = null;
+      if (!wanted || assistantBusy) return;
+      spin();
+    }, ECHO_SETTLE_MS);
   }
 }
 
@@ -64,18 +124,29 @@ export function sttSupported(): boolean {
 export function startListening() {
   wanted = true;
   consecutiveErrors = 0;
+  echoStreak = 0;
   if (!Ctor) {
     listener?.onState('unavailable', 'This browser has no SpeechRecognition support.');
     return;
   }
-  // A second start() while running throws; guard it.
-  if (recognition) return;
+  if (assistantBusy) return;          // resumed by setAssistantBusy(false)
+  if (recognition) return;            // a second start() while running throws
   spin();
 }
 
+/** Abort the current recognition session without clearing `wanted`. */
+function hardStop() {
+  clearTimers();
+  if (recognition) {
+    recognition.onend = null;
+    try { recognition.abort(); } catch { /* already stopped */ }
+    recognition = null;
+  }
+}
+
 function spin() {
-  if (!wanted || !Ctor || !listener) return;
-  clearRestart();
+  if (!wanted || !Ctor || !listener || assistantBusy) return;
+  clearTimers();
   let session: SpeechRecognitionLike;
   try {
     session = new Ctor();
@@ -98,12 +169,18 @@ function spin() {
         const text = transcript.trim();
         if (text) {
           consecutiveErrors = 0;
-          // Speaking over the assistant cancels its reply: this is the local
-          // equivalent of Gemini's server-side barge-in.
-          if (assistantBusy) {
-            onAssistantDone?.();
-            setAssistantBusy(false);
+          if (looksLikeEcho(text)) {
+            // Our own voice, not the user. Dropping it is what stops the loop.
+            echoStreak += 1;
+            if (echoStreak >= ECHO_LOOP_LIMIT) {
+              echoStreak = 0;
+              lastSpoken = '';
+              onEchoLoop?.();
+            }
+            continue;
           }
+          echoStreak = 0;
+          lastSpoken = '';             // a real question clears the reference
           listener?.onFinal(text);
         }
       } else {
@@ -124,7 +201,7 @@ function spin() {
 
   session.onend = () => {
     recognition = null;
-    if (!wanted) return;
+    if (!wanted || assistantBusy) return;
     if (consecutiveErrors >= 5) {
       listener?.onState('error', 'Speech recognition keeps failing; use typed messages instead.');
       return;
@@ -144,12 +221,11 @@ function spin() {
 
 export function stopListening() {
   wanted = false;
-  clearRestart();
-  setAssistantBusy(false);
-  if (recognition) {
-    recognition.onend = null;
-    try { recognition.abort(); } catch { /* already stopped */ }
-    recognition = null;
-  }
+  clearTimers();
+  assistantBusy = false;
+  echoGuardUntil = 0;
+  lastSpoken = '';
+  echoStreak = 0;
+  hardStop();
   listener?.onState('listening', undefined);
 }

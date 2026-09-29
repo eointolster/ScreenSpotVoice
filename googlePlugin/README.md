@@ -152,5 +152,7 @@ Measured on an RTX 5090 against `test-page/index.html` (box measured from the li
 - Replies are text plus `speechSynthesis` audio, not Gemini's 24 kHz return track, so `backend/audio.py` and the WebRTC return path are unused here.
 - No microphone audio is sent over WebRTC; the peer connection carries tab video only.
 - Tool arguments are normalised before validation because the local model emits `box_2d` as the string `"[172, 30, 205, 122]"` rather than a number array. Malformed values are still rejected by the same `HighlightArgs` checks.
+- The local model frequently calls `highlight_region` and then returns no text at all. When that happens the reply describes what actually happened ("I put a box around it.") rather than claiming nothing was found.
+- Recognition is suspended for the whole spoken reply and for a short settle window afterwards, and any final result that reuses most of the assistant's own wording is discarded. The reply is spoken by the same machine that is listening, so without this the microphone transcribes the assistant's reply and sends it back as a new question. If the guard ever fails, listening stops and the panel says so instead of looping. Headphones avoid the problem entirely.
 - The `gemma4` model is fast and transcribes audio well, but measured 0/4 on normalised box grounding, so it is not the default; any model you substitute must be checked against a real page before you trust its rectangles.
 

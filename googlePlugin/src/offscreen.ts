@@ -1,9 +1,12 @@
 import type { View } from './contracts';
-import { cancelSpeech, isSpeaking, onSpeechFinished, setSpeechMuted, speak } from './speech-output';
-import { setAssistantBusy, setListener, startListening, sttSupported, stopListening } from './speech-input';
+import { cancelSpeech, isSpeaking, onPlaybackChange, setSpeechMuted, speak } from './speech-output';
+import { noteAssistantSaid, onEchoLoopDetected, setAssistantBusy, setListener, startListening, sttSupported, stopListening } from './speech-input';
 
 type Active = { id: string; tabId: number; title: string; view: View; ws: WebSocket; pc: RTCPeerConnection; screen: MediaStream; mic: MediaStream; screenSender: RTCRtpSender; micSender: RTCRtpSender; audio: HTMLAudioElement; remoteTrack: MediaStreamTrack | null; paused: boolean; muted: boolean; model: string; diagnostics: Record<string, unknown>; transcript: string[]; meter: AudioContext | null; interval: number | null; statusInterval: number | null; lastSpeech: number; speaking: boolean; status: string; local: boolean; sttActive: boolean };
 let active: Active | null = null;
+// Recognition follows playback: while the assistant speaks, the mic must not be
+// transcribing, or it hears the reply and asks the question again.
+onPlaybackChange(speaking => setAssistantBusy(speaking));
 function inform(status: string, detail = '') {
   if (!active) return;
   active.status = status;
@@ -56,7 +59,13 @@ function beginListening(item: Active) {
       if (state === 'error' && detail) inform('Error', detail);
     },
   });
-  onSpeechFinished(() => setAssistantBusy(false));
+  // If the guard ever fails, say so rather than talking to itself forever.
+  onEchoLoopDetected(() => {
+    if (active !== item) return;
+    stopListening();
+    item.sttActive = false;
+    inform('Error', 'Stopped listening: the microphone kept hearing the assistant. Use the typed message box, or re-enable with Mute mic.');
+  });
   startListening();
   item.sttActive = true;
 }
@@ -91,8 +100,10 @@ async function onServer(message: any) {
     if (typeof message.text === 'string' && message.text) active.transcript.push(message.text.slice(0, 500));
     // Local path: the reply arrives as text and is spoken in this document.
     if (typeof message.speak === 'string' && message.speak.trim() && active.local && !active.muted && !active.paused) {
-      setAssistantBusy(true);
-      speak(message.speak.trim());
+      const line = message.speak.trim();
+      // Record the wording first so the recogniser can recognise its own echo.
+      noteAssistantSaid(line);
+      speak(line);
     }
     inform(message.status || 'Listening', message.detail || '');
   } else if (message.type === 'response_start') { await playFresh(); inform('Responding'); }
@@ -182,7 +193,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (message?.type === 'OFFSCREEN_STOP' && idMatch) { send({ type: 'end' }); stop(); respond({ ok: true }); }
   if (message?.type === 'OFFSCREEN_PAUSE' && idMatch) { void pause().then(() => respond({ ok: true })).catch(error => respond({ ok: false, reason: String(error) })); return true; }
   if (message?.type === 'OFFSCREEN_RESUME' && idMatch) { void resume(message.view).then(() => respond({ ok: true })).catch(error => respond({ ok: false, reason: String(error) })); return true; }
-  if (message?.type === 'OFFSCREEN_MUTE' && idMatch) { active!.muted = !!message.muted; active!.mic.getAudioTracks()[0].enabled = !active!.muted && !active!.paused; setSpeechMuted(active!.muted); send({ type: 'mute', muted: active!.muted }); if (active!.muted) { stopListening(); active!.sttActive = false; } else if (active!.local) beginListening(active!); respond({ ok: true }); }
+  if (message?.type === 'OFFSCREEN_MUTE' && idMatch) { active!.muted = !!message.muted; active!.mic.getAudioTracks()[0].enabled = !active!.muted && !active!.paused; setSpeechMuted(active!.muted); send({ type: 'mute', muted: active!.muted }); if (active!.muted) { stopListening(); active!.sttActive = false; } else if (active!.local && !isSpeaking()) beginListening(active!); respond({ ok: true }); }
   if (message?.type === 'OFFSCREEN_VIEW' && idMatch) { active!.view = message.view; send({ type: 'view', view: message.view, reason: message.reason }); respond({ ok: true }); }
   if (message?.type === 'OFFSCREEN_USER_CLEAR' && idMatch) { send({ type: 'clear' }); respond({ ok: true }); }
   if (message?.type === 'OFFSCREEN_TEXT' && idMatch) { send({ type: 'text', text: message.text }); respond({ ok: true }); }
