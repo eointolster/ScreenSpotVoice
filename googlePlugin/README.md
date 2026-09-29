@@ -137,9 +137,13 @@ OLLAMA_MODEL=qwen3.8:27b
 
 Start the backend as usual. The terminal prints `mode=LOCAL (qwen3.8:27b via …)`; `GET /health` reports `{"mode":"local","model":"local:qwen3.8:27b"}`. Everything else — pairing, overlay, grounding staleness, box validation — is unchanged. Setting `MODEL_BACKEND=gemini` restores the original live path exactly; the Gemini key is not required and is not read on the local path.
 
+If you started without a `MODEL_BACKEND` line the backend stays on Gemini, and with no key it can only calibrate: it will now say so on startup and tell you the one-line fix. The side panel always shows the model and mode actually in use, and shows a "no live model is configured" notice in calibration mode, so the active provider is never a guess.
+
+`OLLAMA_KEEP_ALIVE` keeps the model resident between questions. Ollama otherwise unloads after about five minutes idle, and reloading a 17 GB model costs roughly 20 seconds. Use Ollama's duration syntax (`30m`, `2h`) or bare seconds; `0` or empty leaves Ollama's default. With `30m` the first question still pays the load and later ones measured ~1 s.
+
 **What is and is not local.** Screenshots are encoded on your machine and sent only to your local Ollama server, so page content never reaches Google on this path. **Microphone audio is not local:** Chrome's `SpeechRecognition` is a cloud service and sends audio to a Google speech endpoint, so the existing audio disclosure in *Architecture and privacy* still applies. There is no webcam, tab audio, or capture of any other tab.
 
-Measured on an RTX 5090 against `test-page/index.html` (box measured from the live DOM): `qwen3.8:27b` returned `[172,30,210,120]` against a ground truth of `[171,31,205,122]`. Warm turn latency including a real WebRTC frame was ~1.6 s; the first call after the model is unloaded spends ~20 s loading it, so `OLLAMA_KEEP_ALIVE` is worth setting.
+Measured on an RTX 5090 against `test-page/index.html` (box measured from the live DOM): `qwen3.8:27b` returned `[172,30,210,120]` against a ground truth of `[171,31,205,122]`. A warm turn including a real WebRTC frame took ~1.6 s; the first call after the model is unloaded spends ~20 s loading it, so set `OLLAMA_KEEP_ALIVE`.
 
 **Differences from the Gemini path, all deliberate:**
 

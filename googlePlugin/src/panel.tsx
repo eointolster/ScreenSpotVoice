@@ -46,12 +46,21 @@ function App() {
     finally { setBusy(false); }
   }
   const active = state.tabId !== null;
+  // The backend tells us which provider is really running; never assume Gemini.
+  const mode = (state.diagnostics.mode as string) || '';
+  const isLocal = mode === 'local';
+  const provider = state.model || 'unknown provider';
   return <main>
     <h1>ScreenSpot Voice</h1>
     <div className="muted">Live screen-aware voice guidance</div>
-    <div className="card"><div className="status">{state.status}</div><small>{state.detail || (active ? `Sharing: ${state.tabTitle}` : 'Click the toolbar icon on a website to authorize that tab.')}</small>{active && <small>Shared tab: {state.tabTitle} (#{state.tabId})</small>}</div>
+    <div className="card"><div className="status">{state.status}</div><small>{state.detail || (active ? `Sharing: ${state.tabTitle}` : 'Click the toolbar icon on a website to authorize that tab.')}</small>{active && <small>Shared tab: {state.tabTitle} (#{state.tabId})</small>}
+      <small><strong>Model:</strong> {provider} ({mode || 'unknown mode'})</small>
+    </div>
+    {mode === 'calibration' && <div className="card"><small><strong>No live model is configured.</strong> The backend is running without a Gemini key, so it cannot answer questions. Set <code>MODEL_BACKEND=local</code> in <code>googlePlugin/.env</code> and restart to use a local model instead, or add <code>GEMINI_API_KEY</code>.</small></div>}
     {!active && <>
-      <div className="card"><small>During a live session, microphone audio and selected tab images go through your local backend to Google Gemini. No webcam or tab audio is captured. End Session stops new uploads; data already sent cannot be recalled.</small></div>
+      <div className="card"><small>{isLocal
+        ? 'Microphone audio is transcribed by Chrome (audio goes to a Google speech service). Selected tab images are sent only to the local backend and your own model, so page content is not uploaded to Google. No webcam or tab audio is captured.'
+        : 'During a live session, microphone audio and selected tab images go through your local backend to Google Gemini. No webcam or tab audio is captured. End Session stops new uploads; data already sent cannot be recalled.'}</small></div>
       <label htmlFor="pair">Backend pairing code</label><input id="pair" type="password" value={token} onChange={e => setToken(e.target.value)} autoComplete="off" placeholder="Code shown in backend terminal" />
       <label htmlFor="port">Backend port</label><input id="port" inputMode="numeric" value={port} onChange={e => setPort(e.target.value)} />
       <div className="row"><button className="primary" disabled={busy} onClick={start}>Start Session</button><button disabled={busy} onClick={() => command('CALIBRATE')}>Calibrate box</button><button disabled={busy} onClick={() => command('CLEAR')}>Clear box</button></div>

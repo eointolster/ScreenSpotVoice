@@ -174,6 +174,75 @@ def test_local_turn_surfaces_model_failure_without_claiming_success():
     asyncio.run(scenario())
 
 
+def test_keep_alive_is_passed_to_ollama_and_optional(monkeypatch):
+    """A 17 GB model unloads after 5 min idle; the reload costs ~20 s."""
+    from backend.local_model import LocalAdapter
+
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self): pass
+        def json(self): return {"message": {"content": "ok", "tool_calls": []}}
+
+    class FakeClient:
+        def __init__(self, *a, **kw): pass
+        async def post(self, url, json=None):
+            captured.clear()                 # each call is inspected on its own
+            captured.update(json or {})
+            return FakeResponse()
+
+    monkeypatch.setattr("backend.local_model.httpx.AsyncClient", FakeClient)
+
+    async def scenario():
+        with_keep = LocalAdapter("http://h", "m", keep_alive="30m")
+        await with_keep.ask("hi", b"jpeg")
+        assert captured.get("keep_alive") == "30m"
+        # Omitted entirely when unset, so Ollama's own default applies.
+        without = LocalAdapter("http://h", "m")
+        await without.ask("hi", b"jpeg")
+        assert "keep_alive" not in captured
+    asyncio.run(scenario())
+
+
+def _parse_keep_alive(raw: str) -> str | int | None:
+    """Accept Ollama duration syntax ("30m", "2h") or bare seconds.
+
+    Empty or "0" means "don't send keep_alive", leaving Ollama's own default.
+    """
+    raw = raw.strip()
+    if not raw or raw == "0":
+        return None
+    return int(raw) if raw.isdigit() else raw
+
+
+def test_keep_alive_parsing_accepts_ollama_syntax():
+    from backend.run import _parse_keep_alive
+
+    assert _parse_keep_alive("30m") == "30m"
+    assert _parse_keep_alive("2h") == "2h"
+    assert _parse_keep_alive("-1") == "-1"          # Ollama's "keep forever"
+    assert _parse_keep_alive("600") == 600          # bare seconds
+    assert _parse_keep_alive(" 30m ") == "30m"      # whitespace tolerated
+    # Unset or zero must not be forwarded at all.
+    assert _parse_keep_alive("") is None
+    assert _parse_keep_alive("   ") is None
+    assert _parse_keep_alive("0") is None
+
+
+def test_main_boots_for_every_keep_alive_form(monkeypatch):
+    from backend import run as run_module
+
+    booted = []
+    monkeypatch.setenv("MODEL_BACKEND", "local")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setattr(run_module.uvicorn, "run", lambda app, **kw: booted.append(app))
+
+    for raw in ("30m", "2h", "600", "0", ""):
+        monkeypatch.setenv("OLLAMA_KEEP_ALIVE", raw)
+        run_module.main()                    # must not raise
+    assert len(booted) == 5
+
+
 def test_local_path_never_streams_images_or_audio_on_a_timer():
     """Local is one image per question, so the Gemini frame/audio loops are off."""
     from backend.server import Call as RealCall

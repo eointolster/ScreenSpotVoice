@@ -35,6 +35,8 @@ class Settings:
     backend: str = "gemini"
     local_host: str = "http://127.0.0.1:11434"
     local_model: str = "qwen3.8:27b"
+    # How long Ollama keeps the model resident; None uses Ollama's own default.
+    local_keep_alive: str | int | None = None
 
     @property
     def is_local(self) -> bool:
@@ -213,7 +215,8 @@ class Call:
 
     async def _run_adapter(self):
         if self.settings.is_local:
-            self.local = LocalAdapter(self.settings.local_host, self.settings.local_model)
+            self.local = LocalAdapter(self.settings.local_host, self.settings.local_model,
+                                     keep_alive=self.settings.local_keep_alive)
             reachable, detail = await self.local.health()
             if not reachable:
                 self.provider_dead = True

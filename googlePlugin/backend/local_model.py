@@ -49,10 +49,14 @@ class LocalAdapter:
     barge-in or cancellation to manage here: each call is one user turn.
     """
 
-    def __init__(self, host: str, model: str, timeout: float = 120.0):
+    def __init__(self, host: str, model: str, timeout: float = 120.0,
+                 keep_alive: str | int | None = None):
         self.host = host.rstrip("/")
         self.model = model
         self.timeout = timeout
+        # Ollama unloads a model after 5 minutes idle by default, which makes the
+        # next question pay a ~20 s reload on a 17 GB model. Passed per request.
+        self.keep_alive = keep_alive
         self._client: httpx.AsyncClient | None = None
         self.last_latency_ms: int | None = None
 
@@ -105,6 +109,8 @@ class LocalAdapter:
                 },
             ],
         }
+        if self.keep_alive is not None:
+            body["keep_alive"] = self.keep_alive
         started = asyncio.get_running_loop().time()
         try:
             response = await self._client.post(f"{self.host}/api/chat", json=body)
