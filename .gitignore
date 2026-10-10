@@ -1,0 +1,25 @@
+# Local credentials and configuration
+.env
+.env.*
+!.env.example
+*.local
+*.pem
+*.p12
+*.pfx
+*.keystore
+*.secret
+secrets/
+
+# Local development artifacts
+**/node_modules/
+**/.venv/
+**/.cache/
+**/dist/
+**/__pycache__/
+**/.pytest_cache/
+**/models/
+**/logs/
+**/output/
+**/*.py[cod]
+**/*.log
+.playwright-mcp/

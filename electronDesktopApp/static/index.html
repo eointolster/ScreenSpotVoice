@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; media-src 'self' data: blob:; connect-src 'self'">
+  <title>ScreenSpot Voice Desktop</title>
+  <link rel="stylesheet" href="style.css">
+</head><body class="control-page">
+  <main class="app-shell">
+    <header class="app-header"><div class="brand-mark">S</div><div><h1>ScreenSpot Voice</h1><p>Desktop guide · local voice</p></div><span class="version">Desktop</span></header>
+    <section class="status-card" aria-live="polite"><span id="status-dot" class="status-dot"></span><div><strong id="status">Ready</strong><p id="detail">Choose a display and start a session.</p></div></section>
+    <p class="privacy-note">A screen image is captured when you finish a question. In Local mode, it goes to Ollama on this computer. In Gemini mode, the selected image, question and recent text turns go to Google. Microphone audio is transcribed locally by Whisper in both modes.</p>
+    <details id="settings" open><summary>Settings</summary><div class="settings-grid">
+      <label>Display<select id="display"></select></label>
+      <label>Image sent to model<select id="capture-scope"><option value="window">Active application window</option><option value="display">Full display</option></select><small>Window mode crops to the active app. Use Full display for desktop icons or items across windows.</small></label>
+      <label>Model provider<select id="provider"><option value="local">Local Ollama</option><option value="gemini">Gemini API</option></select></label>
+      <label id="local-model-row">Ollama vision model<input id="ollama-model" type="text" value="qwen3.8:27b" spellcheck="false"></label>
+      <label id="gemini-model-row" hidden>Gemini vision model<input id="gemini-model" type="text" value="gemini-3.5-flash" spellcheck="false"><small>3.5 Flash is better suited to guided tasks. Enter gemini-3.5-flash-lite for faster, simpler locating.</small></label>
+      <label id="gemini-key-row" hidden>Gemini API key<input id="gemini-key" type="password" autocomplete="off" placeholder="Paste a new key or use the saved key"><small id="key-state">No key entered.</small></label>
+      <label id="remember-key-row" class="check-row" hidden><input id="remember-key" type="checkbox"><span>Remember key securely on this computer</span></label>
+      <button id="forget-key" class="quiet" type="button" hidden>Forget saved key</button>
+      <div class="two-col"><label>Whisper model<select id="whisper-model"><option value="tiny.en">tiny.en · fastest</option><option value="base.en">base.en · balanced</option><option value="small.en">small.en · more accurate</option></select></label>
+      <label>Kokoro voice<select id="kokoro-voice"><option value="af_heart">Heart</option><option value="af_bella">Bella</option><option value="am_michael">Michael</option><option value="bf_emma">Emma</option></select></label></div>
+      <label class="check-row"><input id="hands-free" type="checkbox"><span>Hands-free turn detection (quiet rooms)</span></label>
+    </div><button id="save-settings" class="quiet" type="button">Save settings</button></details>
+    <section class="session-section"><div class="controls"><button id="start" class="primary">Start session</button><button id="talk" disabled>Talk now</button><button id="mute" disabled>Mute mic</button><button id="end" class="danger" disabled>End session</button></div><div class="controls secondary"><button id="calibrate" disabled>Calibrate box</button><button id="clear" disabled>Clear box</button></div>
+      <div class="controls secondary alignment"><span id="alignment-state">Box alignment: 0, 0 px</span><button data-nudge-x="-5" data-nudge-y="0" type="button">← 5 px</button><button data-nudge-x="5" data-nudge-y="0" type="button">5 px →</button><button data-nudge-x="0" data-nudge-y="-5" type="button">↑ 5 px</button><button data-nudge-x="0" data-nudge-y="5" type="button">↓ 5 px</button><button id="reset-alignment" type="button">Reset</button></div>
+      <p class="small-help">Talk now starts a manual recording; click Finish question when done. Hands-free submits after a short pause in quiet rooms. The app minimizes for each capture and stays minimized until you restore it. Use box alignment controls if outlines consistently miss in one direction. Closing this window ends the session.</p></section>
+    <form id="typed-form"><label for="typed">Optional typed question</label><div class="typed-row"><input id="typed" type="text" maxlength="500" placeholder="Ask about what is visible" autocomplete="off"><button id="send" type="submit" disabled>Send</button></div></form>
+    <section class="conversation"><div class="section-title"><h2>Conversation</h2><span id="model-latency"></span></div><div id="messages" class="messages" role="log" aria-live="polite"><p class="empty">Questions and replies appear here during the session.</p></div></section>
+    <p id="setup-hint" class="setup-hint" hidden>Python voice setup is missing. Run <code>./setup.sh</code> inside electronDesktopApp, then reopen this app.</p>
+  </main><script src="renderer.js"></script>
+</body></html>

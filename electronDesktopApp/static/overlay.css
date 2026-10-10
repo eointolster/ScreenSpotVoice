@@ -1,0 +1,36 @@
+:root, body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  font-family: Inter, system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+#outline {
+  display: none;
+  position: absolute;
+  border: 4px solid #75e8fb;
+  outline: 4px solid #071928;
+  border-radius: 10px;
+  box-shadow: 0 0 0 7px #75e8fb30, 0 0 24px #2ed4f175;
+  pointer-events: none;
+}
+#target-label {
+  display: none;
+  position: absolute;
+  background: #092133;
+  border: 1px solid #75e8fb;
+  color: #d8faff;
+  padding: 5px 9px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  max-width: min(300px, 100vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}

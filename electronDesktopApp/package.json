@@ -1,0 +1,19 @@
+{
+  "name": "screenspot-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ScreenSpot Voice desktop assistant",
+  "main": "dist/main.cjs",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "npm run build && electron .",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "22.17.2",
+    "electron": "44.4.5",
+    "esbuild": "0.25.9",
+    "typescript": "5.9.2"
+  }
+}

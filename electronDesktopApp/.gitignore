@@ -1,0 +1,12 @@
+node_modules/
+.venv/
+.cache/
+dist/
+*.log
+__pycache__/
+.pytest_cache/
+*.pyc
+models/
+logs/
+ScreenSpot Voice.desktop
+output/

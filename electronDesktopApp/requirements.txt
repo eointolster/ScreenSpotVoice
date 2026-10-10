@@ -1,0 +1,5 @@
+faster-whisper==1.2.1
+kokoro-onnx==0.6.1
+google-genai==2.25.0
+httpx==0.28.1
+soundfile==0.13.1

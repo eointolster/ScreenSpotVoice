@@ -35,7 +35,7 @@ It prints a fresh **pairing code** on each run. Enter that code in the side pane
 1. Open `chrome://extensions` in Chrome 142+.
 2. Turn on **Developer mode**.
 3. Click **Load unpacked**.
-4. Select **`/home/eoin/Project3ExperimentTools/webrtcTesting/googlePlugin/dist`**. Select `dist`, not the project root.
+4. Select the **`googlePlugin/dist`** folder inside your cloned repository. Select `dist`, not the project root.
 5. Open an ordinary `http://` or `https://` webpage and click the **ScreenSpot Voice toolbar icon**. This grants temporary access to that tab and opens the panel.
 6. Enter the backend pairing code and click **Start Session**. On first use, ScreenSpot opens a full extension tab for microphone permission. Click **Allow microphone**, accept Chrome's prompt, then click **Return to webpage**. Click **Start Session** again in the panel (re-enter the pairing code if the panel was closed).
 
